@@ -5,7 +5,7 @@ using Timer = System.Windows.Forms.Timer;
 
 
 
-namespace offSiteTimekeeping_NET_8
+namespace TimekeepingMiddleware
 {
     partial class Form1
     {

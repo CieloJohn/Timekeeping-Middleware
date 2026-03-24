@@ -2,7 +2,8 @@ using Microsoft.Win32;
 using offSiteTimekeeping.Helpers;
 using offSiteTimekeeping.Models;
 using offSiteTimekeeping.Services;
-
+using offSiteTimekeeping_NET8.Helpers;
+using offSiteTimekeeping_NET8.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -15,7 +16,7 @@ using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 
-namespace offSiteTimekeeping_NET_8
+namespace TimekeepingMiddleware
 {
     public partial class Form1 : Form
     {
@@ -31,8 +32,9 @@ namespace offSiteTimekeeping_NET_8
         private TimeSpan serverTimeOffset = TimeSpan.Zero;
         private bool _balloonTipShown = false;
         private bool _reconnectionTipShown = false;
+        private RegistryInterface registry = new RegistryInterface();
+        private ZkServices _poller;
 
-        //Form Handling
         public Form1(bool startHidden = false)
         {
             try
@@ -67,8 +69,8 @@ namespace offSiteTimekeeping_NET_8
             try
             {
                 pollingTimer.Interval = 5000;
-                pollingTimer.Tick -= Timer1_Tick;
-                pollingTimer.Tick += Timer1_Tick;
+                pollingTimer.Tick -= updateTable;
+                pollingTimer.Tick += updateTable;
                 pollingTimer.Start();
 
                 var serverTime = DatabaseServices.GetServerTime();
@@ -103,6 +105,35 @@ namespace offSiteTimekeeping_NET_8
                 ShowBalloonOnce("Timekeeping Middleware", "Running in background");
             }
         }
+
+
+        //private void Form1_Load(object sender, EventArgs e)
+        //{
+        //    _poller = new ZkServices(Program.BiometricsIp, Program.BiometricsPort, Program.BiometricsCommKey);
+
+        //    _poller.NewLogsFetched += logs =>
+        //    {
+        //        this.Invoke(new Action(() =>
+        //        {
+        //            dataGridView1.DataSource = logs; 
+        //            label14.Text = _poller.GetSerialNumber(); // if needed
+        //        }));
+        //    };
+
+        //    _poller.StatusChanged += msg => this.Invoke(() => label15.Text = msg);
+        //    _poller.ErrorOccurred += ex => this.Invoke(() => popUpMessage("ERROR", ex.Message, 1));
+
+        //    if (_poller.Connect())
+        //    {
+        //        label1.Text = "Polling started...";
+        //    }
+        //}
+
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            _poller?.Disconnect();
+        }
+
         public void CleanupNotifyIcon()
         {
             notifyIcon1.Visible = false;
@@ -117,88 +148,14 @@ namespace offSiteTimekeeping_NET_8
         {
             try
             {
-                string appName = "PVAOTimekeepingMiddleware";
-                string exePath = Application.ExecutablePath;
-
-                using (RegistryKey reg = Registry.CurrentUser.OpenSubKey(
-                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
-                {
-                    string[] valueNames = reg.GetValueNames();
-                    foreach (string name in valueNames)
-                    {
-                        object val = reg.GetValue(name);
-                        if (val is string path && path.Equals(exePath, StringComparison.OrdinalIgnoreCase)
-                            && name != appName)
-                        {
-                            reg.DeleteValue(name);
-                        }
-                    }
-
-                    reg.SetValue(appName, exePath);
-                }
-            }
+                registry.Register(Application.ExecutablePath);
+            }   
             catch (Exception ex)
             {
-                //MessageBox.Show("Failed to set startup: " + ex.Message);
                 popUpMessage("ERROR", $"Failed to set startup: {ex.Message}", 1);
             }
         }
-        private void RemoveFromStartup()
-        {
-            string appName = "PVAOTimekeepingMiddleware";
-            using (RegistryKey reg = Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
-            {
-                if (reg.GetValue(appName) != null)
-                {
-                    reg.DeleteValue(appName);
-                }
-            }
-        }
 
-        /// Button Controls
-        //private async void button2_Click(object sender, EventArgs e)
-        //{
-        //    try
-        //    {
-        //        label1.Text = "Disconnecting...";
-        //        // Cancels Retries tasks
-        //        _retryCts?.Cancel();
-        //        _retryCts = null;
-
-        //        pollingTimer.Stop();
-        //        syncTimer.Stop();
-        //        checkTimeTimer.Stop();
-
-        //        await Task.Run(() =>
-        //        {
-        //            if (Connected)
-        //            {
-        //                zk.Disconnect();
-        //                Connected = false;
-        //            }
-        //        });
-
-        //        listView1.Items.Clear();
-        //        listView1.Columns.Clear();
-
-        //        ConfigEncryptor.ClearConfig();
-        //        LocalDbService.DeleteLocalDatabase();
-
-        //        Program.BiometricsIp = null;
-        //        Program.BiometricsCommKey = 0;
-        //        Program.DataTransferMode = null;
-        //        Program.IntervalTime = 0;
-        //        Program.ScheduledTime = TimeSpan.Zero;
-
-        //        this.Tag = "Restart";
-        //        this.Close();
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        MessageBox.Show("Error during disconnect: " + ex.Message);
-        //    }
-        //}
         private void minimize_Click(object sender, EventArgs e)
         {
             this.Hide();
@@ -249,7 +206,7 @@ namespace offSiteTimekeeping_NET_8
             Program.IntervalTime = 0;
             Program.ScheduledTime = TimeSpan.Zero;
 
-            RemoveFromStartup();
+            registry.Remove(Application.ExecutablePath);
             Application.Exit();
         }
         //Display Toggles
@@ -424,7 +381,6 @@ namespace offSiteTimekeeping_NET_8
             {
                 if (!DatabaseServices.TestDatabaseConnection())
                 {
-                    //MessageBox.Show("Database Unreachable");
                     return false;
                 }
                 else
@@ -455,7 +411,6 @@ namespace offSiteTimekeeping_NET_8
                 if (!zk.ReadGeneralLogData(dwMachineNumber))
                 {
                     popUpMessage("NOTICE", "No Log Data available or connection lost.", 2);
-                    //return false;
                 }
 
                 while (zk.SSR_GetGeneralLogData(
@@ -535,7 +490,6 @@ namespace offSiteTimekeeping_NET_8
             catch (Exception ex)
             {
                 zk.SetDeviceTime(1);
-                //MessageBox.Show("[Syncing local time] : Server time sync failed : " + ex.Message);
                 popUpMessage("ERROR", $"[Syncing local time] : Server time sync failed : {ex.Message}", 1);
             }
         }
@@ -586,7 +540,7 @@ namespace offSiteTimekeeping_NET_8
 
 
         //Timers
-        private void Timer1_Tick(object sender, EventArgs e)
+        private void updateTable(object sender, EventArgs e)
         {
             if (!Connected) return;
             try
@@ -608,7 +562,7 @@ namespace offSiteTimekeeping_NET_8
                         out dwVerifyMode,
                         out dwInOutMode,
                         out dwYear,
-                        out dwMonth,
+                        out dwMonth,    
                         out dwDay,
                         out dwHour,
                         out dwMinute,
@@ -638,7 +592,7 @@ namespace offSiteTimekeeping_NET_8
                             }
 
                             Invoke(() =>
-                            {
+                            {   
                                 var item = new ListViewItem(log.EnrollNumber);
                                 item.SubItems.Add(log.ModType.ToString());
                                 item.SubItems.Add(log.InOutMode.ToString());
@@ -653,19 +607,8 @@ namespace offSiteTimekeeping_NET_8
             }
             catch (Exception ex)
             {
-                //MessageBox.Show("TransferTimer Error: " + ex.Message);
                 popUpMessage("ERROR", $"TransferTimer Error: {ex.Message}", 1);
             }
-        }
-
-        private async void SyncTimer_Tick(object sender, EventArgs e)
-        {
-            await Task.Run(() => SyncLogsToCentral());
-        }
-
-        private void ClockTimer_Tick(object sender, EventArgs e)
-        {
-            labelClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         }
 
         private CancellationTokenSource _retryCts;
@@ -705,7 +648,6 @@ namespace offSiteTimekeeping_NET_8
                         this.SafeInvoke(() =>
                         {
                             label15.Text = "Cannot Reach";
-                            //label1.Font = new Font("Segoe UI", 10F);
                         });
                     }
 
@@ -767,7 +709,16 @@ namespace offSiteTimekeeping_NET_8
         }
 
 
-        //WinForms Style Configs
+        private async void SyncTimer_Tick(object sender, EventArgs e)
+        {
+            await Task.Run(() => SyncLogsToCentral());
+        }
+
+        private void ClockTimer_Tick(object sender, EventArgs e)
+        {
+            labelClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
         private void middlewareVerticalText(object sender, PaintEventArgs e)
         {
             string text = "| MIDDLEWARE |";
@@ -779,8 +730,6 @@ namespace offSiteTimekeeping_NET_8
             e.Graphics.ResetTransform();
         }
 
-
-        //WinForms Behaviour Configs
         private bool _startHidden = false;
         private bool _startMinimizedToTray = false;
         private bool _hasShownOnce = false;
@@ -849,8 +798,6 @@ namespace offSiteTimekeeping_NET_8
             DatabaseUnreachable.ShowBalloonTip(1000, title, message, ToolTipIcon.Warning);
             _reconnectionTipShown = true;
         }
-
-
 
         protected void EnableMinimizeToTray(NotifyIcon trayIcon)
         {
@@ -937,14 +884,6 @@ namespace offSiteTimekeeping_NET_8
                     popUpDesc.ForeColor = Color.FromArgb(10, 70, 90);
                     closePopUp.ForeColor = Color.FromArgb(10, 90, 120);
                     break;
-
-                    //case 3:
-                    //    showCredentialsError.BackColor = Color.FromArgb(40, 60, 40);
-                    //    label12.ForeColor = Color.FromArgb(90, 120, 90);
-                    //    panel2.BackColor = Color.FromArgb(57, 82, 57);
-                    //    credentialsNotice.ForeColor = Color.FromArgb(160, 190, 160);
-                    //    closeCredentialsNotice.ForeColor = Color.FromArgb(90, 120, 90);
-                    //    break;
             }
 
             popUpPanel.BringToFront();

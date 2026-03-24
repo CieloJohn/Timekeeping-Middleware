@@ -1,4 +1,4 @@
-﻿using offSiteTimekeeping_NET_8;
+﻿using TimekeepingMiddleware;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -12,7 +12,6 @@ public static class ConfigEncryptor
 {
     private const string SecretKey = "MySuperSecurePassphrase123";
     private static readonly byte[] Salt = Encoding.UTF8.GetBytes("TimekeepingSalt123");
-    //private static readonly string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dbconfig.dat");
     private static readonly string ConfigPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "TimekeepingMiddleware", "connection.json");

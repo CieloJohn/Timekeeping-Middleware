@@ -7,7 +7,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
-namespace offSiteTimekeeping_NET_8
+namespace TimekeepingMiddleware
 {
     public partial class LoginForm : Form
     {
