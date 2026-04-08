@@ -1,125 +1,193 @@
-﻿using offSiteTimekeeping.Models;
-using offSiteTimekeeping.Services;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Data;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Timers;
-using TimekeepingMiddleware;
+using System.Threading;
 using zkemkeeper;
+using offSiteTimekeeping.Models;
+using offSiteTimekeeping.Services;
 
 namespace offSiteTimekeeping_NET8.Services
 {
-    internal class ZkServices
+    internal class ZkServices : IDisposable
     {
-        private readonly CZKEM _zk = new CZKEM();
-        private readonly System.Timers.Timer _pollTimer = new System.Timers.Timer();
+        private CZKEM _zk;
+        private Thread _staThread;
+        private readonly AutoResetEvent _workEvent = new AutoResetEvent(false);
+        private readonly object _lock = new object();
+
         private readonly string _ip;
         private readonly int _port;
         private readonly int _commKey;
-        private DateTime _lastSuccessfulPull = DateTime.MinValue;
 
-        // Events to safely notify the form
-        public event Action<List<BiometricLog>> NewLogsFetched;
+        private DateTime _lastPullTime = DateTime.MinValue;
+        private string _serialNumber = string.Empty;
+        private bool _isConnected = false;
+
+        private volatile bool _shouldRun = true;
+
+        // Events
+        public event Action<List<BiometricLog>> LogsReadyForUI;
         public event Action<string> StatusChanged;
+        public event Action<string> SerialNumberChanged;
         public event Action<Exception> ErrorOccurred;
+        public event Action<bool> ConnectionStatusChanged;
 
         public ZkServices(string ip, int port, int commKey)
         {
             _ip = ip;
             _port = port;
             _commKey = commKey;
-
-            _pollTimer.Elapsed += PollTimer_Elapsed;
-            _pollTimer.AutoReset = true;
         }
 
-        public bool Connect()
+        public void Start()
         {
-            if (_zk.Connect_Net(_ip, _port))
+            _staThread = new Thread(StaThreadProc)
             {
-                _zk.SetCommPassword(_commKey);
-                _pollTimer.Interval = Program.IntervalTime;
-                _pollTimer.Start();
-                StatusChanged?.Invoke("Connected");
-                return true;
+                IsBackground = true,
+                Name = "ZKemKeeper_STA_Thread"
+            };
+            _staThread.SetApartmentState(ApartmentState.STA);
+            _staThread.Start();
+        }
+
+        private void StaThreadProc()
+        {
+            _zk = new CZKEM();
+
+            while (_shouldRun)
+            {
+                try
+                {
+                    _workEvent.WaitOne(10000);
+
+                    if (!_shouldRun) break;
+
+                    lock (_lock)
+                    {
+                        if (!_isConnected)
+                        {
+                            bool connected = TryConnect();
+                            ConnectionStatusChanged?.Invoke(connected);
+                            if (connected)
+                            {
+                                _serialNumber = GetSerialNumber();
+                                SerialNumberChanged?.Invoke(_serialNumber);
+                                StatusChanged?.Invoke("Connected");
+                            }
+                            else
+                            {
+                                StatusChanged?.Invoke("Cannot Reach Device");
+                            }
+                        }
+                        else
+                        {
+                            var logs = FetchNewLogs();
+                            if (logs.Count > 0)
+                            {
+                                LogsReadyForUI?.Invoke(logs);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ErrorOccurred?.Invoke(ex);
+                }
             }
+
+            try { _zk?.Disconnect(); } catch { }
+        }
+
+        private bool TryConnect()
+        {
+            try
+            {
+                if (_zk.SetCommPassword(_commKey) && _zk.Connect_Net(_ip, _port))
+                {
+                    _zk.EnableDevice(1, true);
+                    _isConnected = true;
+                    return true;
+                }
+            }
+            catch { }
+            _isConnected = false;
             return false;
         }
 
-        private async void PollTimer_Elapsed(object sender, ElapsedEventArgs e)
+        private List<BiometricLog> FetchNewLogs()
         {
-            _pollTimer.Stop();
+            var newLogs = new List<BiometricLog>();
 
             try
             {
-                await Task.Run(() => FetchLogsInternal());
+                if (!_zk.ReadGeneralLogData(1))
+                    return newLogs;
+
+                int dwVerifyMode, dwInOutMode, dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond, dwWorkCode = 0;
+                string dwEnrollNumber;
+
+                while (_zk.SSR_GetGeneralLogData(1, out dwEnrollNumber, out dwVerifyMode,
+                    out dwInOutMode, out dwYear, out dwMonth, out dwDay,
+                    out dwHour, out dwMinute, out dwSecond, ref dwWorkCode))
+                {
+                    var timestamp = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
+
+                    if (timestamp > _lastPullTime)
+                    {
+                        newLogs.Add(new BiometricLog
+                        {
+                            EnrollNumber = dwEnrollNumber,
+                            ModType = dwVerifyMode,
+                            InOutMode = dwInOutMode,
+                            Timestamp = timestamp,
+                            WorkCode = dwWorkCode,
+                            DeviceSerialNumber = _serialNumber
+                        });
+                    }
+                }
+
+                if (newLogs.Count > 0)
+                {
+                    _lastPullTime = DateTime.Now;
+                    LocalDbService.SaveLogs(newLogs);
+                }
             }
             catch (Exception ex)
             {
                 ErrorOccurred?.Invoke(ex);
             }
-            finally
+
+            return newLogs;
+        }
+
+        private string GetSerialNumber()
+        {
+            try
             {
-                _pollTimer.Start();
+                string sn = "";
+                _zk.GetSerialNumber(1, out sn);
+                return sn;
+            }
+            catch
+            {
+                return "Unknown";
             }
         }
 
-        public void FetchLogsInternal()
+        public void TriggerPolling()
         {
-            if (!_zk.ReadGeneralLogData(1))
-            {
-                return;
-            }
-
-            var logs = new List<BiometricLog>();
-            int dwVerifyMode, dwInOutMode, dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond, dwWorkCode = 0;
-            string dwEnrollNumber;
-
-            while (_zk.SSR_GetGeneralLogData(1, out dwEnrollNumber, out dwVerifyMode,
-                out dwInOutMode, out dwYear, out dwMonth, out dwDay,
-                out dwHour, out dwMinute, out dwSecond, ref dwWorkCode))
-            {
-                var ts = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
-
-                if (ts > _lastSuccessfulPull)
-                {
-                    logs.Add(new BiometricLog
-                    {
-                        EnrollNumber = dwEnrollNumber,
-                        ModType = dwVerifyMode,
-                        InOutMode = dwInOutMode,
-                        Timestamp = ts,
-                        WorkCode = dwWorkCode,
-                        DeviceSerialNumber = GetSerialNumber()
-                    });
-                }
-            }
-
-            if (logs.Count > 0)
-            {
-                _lastSuccessfulPull = DateTime.Now;
-                LocalDbService.SaveLogs(logs);
-                NewLogsFetched?.Invoke(logs);
-            }
-
-            // Optional: call SyncLogsToCentral() here too (also on background)
-            // SyncLogsToCentral();
-        }
-
-        public string GetSerialNumber()
-        {
-            string sn = "";
-            _zk.GetSerialNumber(1, out sn);
-            return sn;
+            _workEvent.Set();
         }
 
         public void Disconnect()
         {
-            _pollTimer.Stop();
-            _zk.Disconnect();
+            _shouldRun = false;
+            _workEvent.Set();
+            _staThread?.Join(2000);
+        }
+
+        public void Dispose()
+        {
+            Disconnect();
         }
     }
 }

@@ -67,8 +67,28 @@ namespace offSiteTimekeeping.Services
             }
             catch (Exception ex)
             {
-                throw new Exception("[catch] Database error: " + ex.Message);
+                throw new Exception("Database error: " + ex.Message);
             }
+
+
+            //catch (SqlException sqlEx)
+            //{
+            //    MessageBox.Show(
+            //        "SQL Error: Possibly table/column mismatch or invalid query.\n\n" + sqlEx.Message,
+            //        "Database Error",
+            //        MessageBoxButtons.OK,
+            //        MessageBoxIcon.Error
+            //    );
+            //}
+            //catch (Exception ex)
+            //{
+            //    MessageBox.Show(
+            //        "General Error: " + ex.Message,
+            //        "Error",
+            //        MessageBoxButtons.OK,
+            //        MessageBoxIcon.Error
+            //    );
+            //}
         }
 
         public static HashSet<string> GetExistingLogKeysInCentralDb(List<BiometricLog> logs, string deviceSerial)

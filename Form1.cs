@@ -68,27 +68,62 @@ namespace TimekeepingMiddleware
         {
             try
             {
-                pollingTimer.Interval = 5000;
-                pollingTimer.Tick -= updateTable;
-                pollingTimer.Tick += updateTable;
-                pollingTimer.Start();
-
-                var serverTime = DatabaseServices.GetServerTime();
-                serverTimeOffset = serverTime - DateTime.Now;
-
-                clockTimer = new System.Windows.Forms.Timer();
-                clockTimer.Interval = 1000;
+                // Clock Timer
+                clockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
                 clockTimer.Tick += (s, ev) =>
-                {
                     labelClock.Text = (DateTime.Now + serverTimeOffset).ToString("yyyy-MM-dd HH:mm:ss");
-                };
                 clockTimer.Start();
 
-                ConnectAndFetchLogs();
+                // Initialize the Poller (STA Thread version)
+                _poller = new ZkServices(Program.BiometricsIp, Program.BiometricsPort, Program.BiometricsCommKey);
+
+                // Subscribe to events - Use BeginInvoke to prevent deadlocks
+                _poller.StatusChanged += msg =>
+                    this.BeginInvoke(new Action(() => label15.Text = msg));
+
+                _poller.SerialNumberChanged += sn =>
+                    this.BeginInvoke(new Action(() => label14.Text = sn));
+
+                _poller.ErrorOccurred += ex =>
+                    this.BeginInvoke(new Action(() => popUpMessage("ERROR", ex.Message, 1)));
+
+                _poller.LogsReadyForUI += logs =>
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        biometricsLogsToDb.AddRange(logs);
+                        syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(
+                            biometricsLogsToDb, _biometricSerialNumber);
+                        ShowLogs();
+                    }));
+                };
+
+                _poller.ConnectionStatusChanged += isConnected =>
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        if (isConnected)
+                        {
+                            label1.Text = "Connected";
+                            label1.Font = new Font("Segoe UI", 12F);
+                            ConfigureSyncTimer();
+                            ShowConnectionInfos();
+                        }
+                        else
+                        {
+                            label1.Text = "Waiting for network";
+                            label15.Text = "Cannot Reach";
+                        }
+                    }));
+                };
+
+                // Start the STA Thread for ZKemKeeper operations
+                _poller.Start();
+
+                // Initial trigger to attempt connection
+                _poller.TriggerPolling();
+
                 ConfigureSyncTimer();
-                syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-                ShowConnectionInfos();
-                ShowLogs();
                 LoadStartHiddenSetting();
             }
             catch (Exception ex)
@@ -105,51 +140,17 @@ namespace TimekeepingMiddleware
                 ShowBalloonOnce("Timekeeping Middleware", "Running in background");
             }
         }
-
-
-        //private void Form1_Load(object sender, EventArgs e)
-        //{
-        //    _poller = new ZkServices(Program.BiometricsIp, Program.BiometricsPort, Program.BiometricsCommKey);
-
-        //    _poller.NewLogsFetched += logs =>
-        //    {
-        //        this.Invoke(new Action(() =>
-        //        {
-        //            dataGridView1.DataSource = logs; 
-        //            label14.Text = _poller.GetSerialNumber(); // if needed
-        //        }));
-        //    };
-
-        //    _poller.StatusChanged += msg => this.Invoke(() => label15.Text = msg);
-        //    _poller.ErrorOccurred += ex => this.Invoke(() => popUpMessage("ERROR", ex.Message, 1));
-
-        //    if (_poller.Connect())
-        //    {
-        //        label1.Text = "Polling started...";
-        //    }
-        //}
-
-        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            _poller?.Disconnect();
-        }
-
         public void CleanupNotifyIcon()
         {
             notifyIcon1.Visible = false;
             notifyIcon1.Dispose();
         }
-        private bool IsConnected(string ip, int comkey, int port)
-        {
-            return zk.SetCommPassword(comkey) && zk.Connect_Net(ip, port);
-        }
-
         private void AddAppToStartup()
         {
             try
             {
                 registry.Register(Application.ExecutablePath);
-            }   
+            }
             catch (Exception ex)
             {
                 popUpMessage("ERROR", $"Failed to set startup: {ex.Message}", 1);
@@ -169,22 +170,50 @@ namespace TimekeepingMiddleware
             notifyIcon1.Visible = true;
             notifyIcon1.ShowBalloonTip(1000, "Timekeeping Middleware", "Running in background", ToolTipIcon.Info);
         }
+
         private void refresh_Click(object sender, EventArgs e)
         {
-            ConnectAndFetchLogs();
+            this.BeginInvoke(new Action(() =>
+            {
+                loadingPanel.Visible = true;
+                loadingLabel.Text = "Refreshing...";
+            }));
 
-            syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-            listView1.Items.Clear();
-            listView1.Columns.Clear();
-            ShowConnectionInfos();
-            ShowLogs();
+            Task.Run(() =>
+            {
+                try
+                {
+                    _poller?.TriggerPolling();   // This tells the STA thread to fetch logs now
+
+                    // Give it a moment to process
+                    Thread.Sleep(800);   // Small delay to allow fetching to complete
+
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        // Refresh synced keys and UI
+                        syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(
+                            biometricsLogsToDb, _biometricSerialNumber);
+
+                        ShowLogs();
+                        loadingPanel.Visible = false;
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        popUpMessage("ERROR", $"Refresh failed: {ex.Message}", 1);
+                        loadingPanel.Visible = false;
+                    }));
+                }
+            });
         }
         private void notifyIcon1_MouseDoubleClick(object sender, MouseEventArgs e)
         {
             this.Show();
             this.WindowState = FormWindowState.Normal;
             this.BringToFront();
-            this.Activate(); // Make sure it gets focus
+            this.Activate();
 
             if (!_hasShownOnce)
             {
@@ -241,13 +270,11 @@ namespace TimekeepingMiddleware
         {
             listView1.Items.Clear();
             listView1.Columns.Clear();
-
             listView1.Columns.Add("User");
             listView1.Columns.Add("ModType");
             listView1.Columns.Add("Action");
             listView1.Columns.Add("Timestamp");
             listView1.Columns.Add("Sync Status");
-
             listView1.OwnerDraw = true;
             listView1.ColumnWidthChanging += listView1_ColumnWidthChanging;
             listView1.DrawColumnHeader += listView1_DrawColumnHeader;
@@ -264,8 +291,6 @@ namespace TimekeepingMiddleware
                 item.SubItems.Add(log.InOutMode.ToString());
                 item.SubItems.Add(log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
                 item.SubItems.Add(isSynced ? "Synced" : "Pending");
-
-                // Optional styling
                 item.ForeColor = isSynced ? Color.Gray : Color.Orange;
 
                 listView1.Items.Add(item);
@@ -350,111 +375,6 @@ namespace TimekeepingMiddleware
             loadingPanel.Controls.Add(loadingLabel);
             this.Controls.Add(loadingPanel);
         }
-
-        private Panel loadingPanel;
-        private Label loadingLabel;
-
-        //Sync Logics
-        private bool ConnectAndFetchLogs()
-        {
-            try
-            {
-                var fetchSuccess = FetchLogs();
-                SyncDeviceTimeWithServer(1);
-                if (!fetchSuccess)
-                {
-                    ReconnectionBalloonNotice("Timekeeping Middleware", "Network Unreachable: Middleware Trying to Reconnect");
-                    StartAutoRetry();
-                }
-                return fetchSuccess;
-            }
-
-            catch
-            {
-                return false;
-            }
-        }
-
-        private bool FetchLogs()
-        {
-            try
-            {
-                if (!DatabaseServices.TestDatabaseConnection())
-                {
-                    return false;
-                }
-                else
-                {
-                    label1.Text = "Connected";
-                }
-
-                Connected = IsConnected(Program.BiometricsIp, Program.BiometricsCommKey, Program.BiometricsPort);
-                if (!Connected)
-                {
-                    return false;
-                }
-
-                this.SafeInvoke(() =>
-                {
-                    label15.Text = "Connected";
-                });
-
-                const int dwMachineNumber = 1;
-                int dwVerifyMode, dwInOutMode, dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond, dwWorkCode = 0;
-                string dwEnrollNumber;
-                string serialNumber = string.Empty;
-                zk.GetSerialNumber(dwMachineNumber, out serialNumber);
-                _biometricSerialNumber = serialNumber;
-                label14.Text = serialNumber;
-                biometricsLogsToDb.Clear();
-
-                if (!zk.ReadGeneralLogData(dwMachineNumber))
-                {
-                    popUpMessage("NOTICE", "No Log Data available or connection lost.", 2);
-                }
-
-                while (zk.SSR_GetGeneralLogData(
-                    dwMachineNumber,
-                    out dwEnrollNumber,
-                    out dwVerifyMode,
-                    out dwInOutMode,
-                    out dwYear,
-                    out dwMonth,
-                    out dwDay,
-                    out dwHour,
-                    out dwMinute,
-                    out dwSecond,
-                    ref dwWorkCode))
-                {
-                    var timestamp = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
-                    var log = new BiometricLog
-                    {
-                        EnrollNumber = dwEnrollNumber,
-                        ModType = dwVerifyMode,
-                        InOutMode = dwInOutMode,
-                        Timestamp = timestamp,
-                        WorkCode = dwWorkCode,
-                        DeviceSerialNumber = _biometricSerialNumber
-                    };
-
-                    biometricsLogsToDb.Add(log);
-                }
-
-                if (biometricsLogsToDb.Count > 0)
-                {
-                    LocalDbService.SaveLogs(biometricsLogsToDb);
-                }
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                popUpMessage("NOTICE", $"{ex.Message}", 1);
-                return false;
-            }
-
-        }
-
         private void SyncLogsToCentral()
         {
             var unsyncedLogs = LocalDbService.GetUnsyncedLogs();
@@ -474,7 +394,6 @@ namespace TimekeepingMiddleware
                 LocalDbService.MarkLogsAsSynced(filtered.ConvertAll(l => l.Id));
             }
         }
-
         public void SyncDeviceTimeWithServer(int machineNumber)
         {
 
@@ -538,137 +457,19 @@ namespace TimekeepingMiddleware
             }
         }
 
-
-        //Timers
-        private void updateTable(object sender, EventArgs e)
-        {
-            if (!Connected) return;
-            try
-            {
-                int dwMachineNumber = 1;
-                string dwEnrollNumber;
-                int dwVerifyMode;
-                int dwInOutMode;
-                int dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond;
-                int dwWorkCode = 0;
-
-                List<BiometricLog> newLogs = new();
-
-                if (zk.ReadGeneralLogData(dwMachineNumber))
-                {
-                    while (zk.SSR_GetGeneralLogData(
-                        dwMachineNumber,
-                        out dwEnrollNumber,
-                        out dwVerifyMode,
-                        out dwInOutMode,
-                        out dwYear,
-                        out dwMonth,    
-                        out dwDay,
-                        out dwHour,
-                        out dwMinute,
-                        out dwSecond,
-                        ref dwWorkCode))
-                    {
-                        var timestamp = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
-                        var log = new BiometricLog
-                        {
-                            EnrollNumber = dwEnrollNumber,
-                            ModType = dwVerifyMode,
-                            InOutMode = dwInOutMode,
-                            Timestamp = timestamp,
-                            WorkCode = dwWorkCode,
-                            DeviceSerialNumber = _biometricSerialNumber
-                        };
-
-                        if (!LocalDbService.LogExists(log))
-                        {
-                            string key = $"{log.Timestamp:yyyy-MM-dd HH:mm:ss}|{_biometricSerialNumber}";
-                            bool isSynced = syncedKeys.Contains(key);
-
-                            LocalDbService.SaveLog(log);
-                            if (isSynced)
-                            {
-                                LocalDbService.MarkLogsAsSynced(new List<int> { log.Id });
-                            }
-
-                            Invoke(() =>
-                            {   
-                                var item = new ListViewItem(log.EnrollNumber);
-                                item.SubItems.Add(log.ModType.ToString());
-                                item.SubItems.Add(log.InOutMode.ToString());
-                                item.SubItems.Add(log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
-                                item.SubItems.Add(isSynced ? "Synced" : "Pending");
-                                item.ForeColor = isSynced ? Color.Gray : Color.Orange;
-                                listView1.Items.Add(item);
-                            });
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                popUpMessage("ERROR", $"TransferTimer Error: {ex.Message}", 1);
-            }
-        }
-
-        private CancellationTokenSource _retryCts;
-        private Task _backgroundRetryTask;
-
-        private async Task RetryConnectUntilSuccessAsync(CancellationToken token)
-        {
-            try
-            {
-                while (!token.IsCancellationRequested)
-                {
-                    if (DatabaseServices.TestDatabaseConnection() && IsBiometricDeviceConnected())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label1.Text = "Connected";
-                            label1.Font = new Font("Segoe UI", 12F);
-                            ConnectAndFetchLogs();
-                            ConfigureSyncTimer();
-                            ShowConnectionInfos();
-                            syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-                            ShowLogs();
-                        });
-                        break;
-                    }
-
-                    if (!DatabaseServices.TestDatabaseConnection())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label1.Text = "Waiting for network";
-                            label1.Font = new Font("Segoe UI", 10F);
-                        });
-                    }
-                    if (!IsBiometricDeviceConnected())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label15.Text = "Cannot Reach";
-                        });
-                    }
-
-                    await Task.Delay(5000, token);
-                }
-            }
-            catch (Exception ex)
-            {
-                popUpMessage("NOTICE", $"{ex.Message}", 2);
-            }
-        }
         private void StartAutoRetry()
         {
-            _retryCts = new CancellationTokenSource();
-            _backgroundRetryTask = RetryConnectUntilSuccessAsync(_retryCts.Token);
+            _poller?.TriggerPolling();
         }
-
         public bool IsBiometricDeviceConnected()
         {
             return IsConnected(Program.BiometricsIp, Program.BiometricsCommKey, Program.BiometricsPort);
         }
+        private bool IsConnected(string ip, int comkey, int port)
+        {
+            return zk.SetCommPassword(comkey) && zk.Connect_Net(ip, port);
+        }
+
         private void CheckTimeTimer_Tick(object sender, EventArgs e)
         {
             TimeSpan now = DateTime.Now.TimeOfDay;
@@ -718,6 +519,15 @@ namespace TimekeepingMiddleware
         {
             labelClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         }
+
+
+
+        ////////////////////////////////////
+        /////     CUSTOM UI STUFFS    //////
+        ////////////////////////////////////
+
+        private Panel loadingPanel;
+        private Label loadingLabel;
 
         private void middlewareVerticalText(object sender, PaintEventArgs e)
         {
@@ -789,16 +599,6 @@ namespace TimekeepingMiddleware
             _balloonTipShown = true;
         }
 
-        private void ReconnectionBalloonNotice(string title, string message)
-        {
-            if (_reconnectionTipShown) return;
-
-            DatabaseUnreachable.Icon = SystemIcons.Information;
-            DatabaseUnreachable.Visible = true;
-            DatabaseUnreachable.ShowBalloonTip(1000, title, message, ToolTipIcon.Warning);
-            _reconnectionTipShown = true;
-        }
-
         protected void EnableMinimizeToTray(NotifyIcon trayIcon)
         {
             this.Resize += (s, e) =>
@@ -851,7 +651,6 @@ namespace TimekeepingMiddleware
             }
             catch (Exception ex)
             {
-                //MessageBox.Show(ex.Message);
                 popUpMessage("NOTICE", $"{ex.Message}", 2);
             }
         }
@@ -906,5 +705,6 @@ namespace TimekeepingMiddleware
             popUpPanel.Visible = false;
             popUpVisibilityTimer.Stop();
         }
+
     }
 }

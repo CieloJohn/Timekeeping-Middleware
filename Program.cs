@@ -24,6 +24,7 @@ namespace TimekeepingMiddleware
         [STAThread]
         static void Main()
         {
+            Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
             Application.ThreadException += (s, e) =>

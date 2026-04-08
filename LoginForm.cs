@@ -16,9 +16,8 @@ namespace TimekeepingMiddleware
         public int CommKey => int.TryParse(biometricsComKeyTxtBox.Text, out int val) ? val : 0;
         public string DataTransferMode => comboBox1.SelectedItem?.ToString();
         public bool LoginSuccessful { get; private set; } = false;
-
         private int currentStep = 0;
-        //Form Handling
+
         public LoginForm()
         {
             try
