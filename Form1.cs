@@ -15,7 +15,6 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
-
 namespace TimekeepingMiddleware
 {
     public partial class Form1 : Form
@@ -68,16 +67,11 @@ namespace TimekeepingMiddleware
         {
             try
             {
-                // Clock Timer
                 clockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
                 clockTimer.Tick += (s, ev) =>
                     labelClock.Text = (DateTime.Now + serverTimeOffset).ToString("yyyy-MM-dd HH:mm:ss");
                 clockTimer.Start();
-
-                // Initialize the Poller (STA Thread version)
                 _poller = new ZkServices(Program.BiometricsIp, Program.BiometricsPort, Program.BiometricsCommKey);
-
-                // Subscribe to events - Use BeginInvoke to prevent deadlocks
                 _poller.StatusChanged += msg =>
                     this.BeginInvoke(new Action(() => label15.Text = msg));
 
@@ -117,10 +111,7 @@ namespace TimekeepingMiddleware
                     }));
                 };
 
-                // Start the STA Thread for ZKemKeeper operations
                 _poller.Start();
-
-                // Initial trigger to attempt connection
                 _poller.TriggerPolling();
 
                 ConfigureSyncTimer();
@@ -183,14 +174,11 @@ namespace TimekeepingMiddleware
             {
                 try
                 {
-                    _poller?.TriggerPolling();   // This tells the STA thread to fetch logs now
-
-                    // Give it a moment to process
-                    Thread.Sleep(800);   // Small delay to allow fetching to complete
+                    _poller?.TriggerPolling(); 
+                    Thread.Sleep(800);  
 
                     this.BeginInvoke(new Action(() =>
                     {
-                        // Refresh synced keys and UI
                         syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(
                             biometricsLogsToDb, _biometricSerialNumber);
 
@@ -238,7 +226,6 @@ namespace TimekeepingMiddleware
             registry.Remove(Application.ExecutablePath);
             Application.Exit();
         }
-        //Display Toggles
         private void ShowConnectionInfos()
         {
             if (string.IsNullOrWhiteSpace(Program.DataTransferMode))
@@ -522,6 +509,9 @@ namespace TimekeepingMiddleware
 
 
 
+
+ /*************************************************************************************************************************************************/
+
         ////////////////////////////////////
         /////     CUSTOM UI STUFFS    //////
         ////////////////////////////////////
@@ -659,7 +649,6 @@ namespace TimekeepingMiddleware
         {
             switch (mode)
             {
-                //RED
                 case 1:
                     popUpPanel.BackColor = Color.FromArgb(130, 50, 50);
                     popUpTitle.ForeColor = Color.FromArgb(190, 135, 135);
@@ -667,7 +656,6 @@ namespace TimekeepingMiddleware
                     popUpDesc.ForeColor = Color.FromArgb(210, 150, 150);
                     closePopUp.ForeColor = Color.FromArgb(190, 135, 135);
                     break;
-                //YELLOW
                 case 2:
                     popUpPanel.BackColor = Color.FromArgb(190, 210, 50);
                     popUpTitle.ForeColor = Color.FromArgb(50, 50, 10);
@@ -675,7 +663,6 @@ namespace TimekeepingMiddleware
                     popUpDesc.ForeColor = Color.FromArgb(70, 70, 20);
                     closePopUp.ForeColor = Color.FromArgb(50, 50, 10);
                     break;
-                //BLUE
                 case 3:
                     popUpPanel.BackColor = Color.FromArgb(32, 167, 199);
                     popUpTitle.ForeColor = Color.FromArgb(10, 90, 120);
