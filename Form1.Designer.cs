@@ -5,7 +5,7 @@ using Timer = System.Windows.Forms.Timer;
 
 
 
-namespace offSiteTimekeeping_NET_8
+namespace TimekeepingMiddleware
 {
     partial class Form1
     {
@@ -83,10 +83,14 @@ namespace offSiteTimekeeping_NET_8
             popUpDesc = new Label();
             popUpTitle = new Label();
             popUpVisibilityTimer = new Timer(components);
+            dashedPanel1 = new offSiteTimekeeping_NET8.Assets.customUserControl.DashedPanel();
+            label3 = new Label();
+            reconnect_button = new Button();
             panel1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)pictureBox1).BeginInit();
             MIDDLEWARE.SuspendLayout();
             popUpPanel.SuspendLayout();
+            dashedPanel1.SuspendLayout();
             SuspendLayout();
             // 
             // label1
@@ -499,7 +503,7 @@ namespace offSiteTimekeeping_NET_8
             popUpPanel.Controls.Add(panel13);
             popUpPanel.Controls.Add(popUpDesc);
             popUpPanel.Controls.Add(popUpTitle);
-            popUpPanel.Location = new Point(209, 219);
+            popUpPanel.Location = new Point(209, 460);
             popUpPanel.Name = "popUpPanel";
             popUpPanel.Size = new Size(320, 170);
             popUpPanel.TabIndex = 57;
@@ -548,6 +552,42 @@ namespace offSiteTimekeeping_NET_8
             popUpTitle.TabIndex = 0;
             popUpTitle.Text = "TITLE";
             // 
+            // dashedPanel1
+            // 
+            dashedPanel1.AllowDrop = true;
+            dashedPanel1.BackColor = Color.FromArgb(28, 38, 30);
+            dashedPanel1.Controls.Add(label3);
+            dashedPanel1.Controls.Add(reconnect_button);
+            dashedPanel1.Location = new Point(53, 148);
+            dashedPanel1.Name = "dashedPanel1";
+            dashedPanel1.Size = new Size(659, 319);
+            dashedPanel1.TabIndex = 57;
+            dashedPanel1.Visible = false;
+            // 
+            // label3
+            // 
+            label3.AutoSize = true;
+            label3.Font = new Font("Microsoft Sans Serif", 20F, FontStyle.Bold);
+            label3.ForeColor = Color.FromArgb(110, 150, 110);
+            label3.Location = new Point(178, 108);
+            label3.Name = "label3";
+            label3.Size = new Size(293, 31);
+            label3.TabIndex = 1;
+            label3.Text = "PROCESS ON HOLD";
+            // 
+            // reconnect_button
+            // 
+            reconnect_button.BackColor = Color.FromArgb(52, 82, 65);
+            reconnect_button.FlatAppearance.BorderColor = Color.FromArgb(120, 205, 125);
+            reconnect_button.FlatStyle = FlatStyle.Flat;
+            reconnect_button.ForeColor = Color.FromArgb(110, 170, 110);
+            reconnect_button.Location = new Point(254, 181);
+            reconnect_button.Name = "reconnect_button";
+            reconnect_button.Size = new Size(140, 25);
+            reconnect_button.TabIndex = 0;
+            reconnect_button.Text = "RECONNECT NOW";
+            reconnect_button.UseVisualStyleBackColor = false;
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(96F, 96F);
@@ -564,9 +604,10 @@ namespace offSiteTimekeeping_NET_8
             Controls.Add(label7);
             Controls.Add(exit);
             Controls.Add(minimize);
+            Controls.Add(MIDDLEWARE);
+            Controls.Add(dashedPanel1);
             Controls.Add(panel1);
             Controls.Add(pictureBox1);
-            Controls.Add(MIDDLEWARE);
             FormBorderStyle = FormBorderStyle.None;
             Icon = (Icon)resources.GetObject("$this.Icon");
             Name = "Form1";
@@ -577,6 +618,8 @@ namespace offSiteTimekeeping_NET_8
             MIDDLEWARE.ResumeLayout(false);
             popUpPanel.ResumeLayout(false);
             popUpPanel.PerformLayout();
+            dashedPanel1.ResumeLayout(false);
+            dashedPanel1.PerformLayout();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -628,5 +671,8 @@ namespace offSiteTimekeeping_NET_8
         private Panel panel13;
         private Timer popUpVisibilityTimer;
         private Button closePopUp;
+        private offSiteTimekeeping_NET8.Assets.customUserControl.DashedPanel dashedPanel1;
+        protected Button reconnect_button;
+        private Label label3;
     }
 }

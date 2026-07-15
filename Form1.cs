@@ -2,7 +2,8 @@ using Microsoft.Win32;
 using offSiteTimekeeping.Helpers;
 using offSiteTimekeeping.Models;
 using offSiteTimekeeping.Services;
-
+using offSiteTimekeeping_NET8.Helpers;
+using offSiteTimekeeping_NET8.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,8 +15,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
-
-namespace offSiteTimekeeping_NET_8
+namespace TimekeepingMiddleware
 {
     public partial class Form1 : Form
     {
@@ -31,8 +31,9 @@ namespace offSiteTimekeeping_NET_8
         private TimeSpan serverTimeOffset = TimeSpan.Zero;
         private bool _balloonTipShown = false;
         private bool _reconnectionTipShown = false;
+        private RegistryInterface registry = new RegistryInterface();
+        private ZkServices _poller;
 
-        //Form Handling
         public Form1(bool startHidden = false)
         {
             try
@@ -66,27 +67,54 @@ namespace offSiteTimekeeping_NET_8
         {
             try
             {
-                pollingTimer.Interval = 5000;
-                pollingTimer.Tick -= Timer1_Tick;
-                pollingTimer.Tick += Timer1_Tick;
-                pollingTimer.Start();
-
-                var serverTime = DatabaseServices.GetServerTime();
-                serverTimeOffset = serverTime - DateTime.Now;
-
-                clockTimer = new System.Windows.Forms.Timer();
-                clockTimer.Interval = 1000;
+                clockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
                 clockTimer.Tick += (s, ev) =>
-                {
                     labelClock.Text = (DateTime.Now + serverTimeOffset).ToString("yyyy-MM-dd HH:mm:ss");
-                };
                 clockTimer.Start();
+                _poller = new ZkServices(Program.BiometricsIp, Program.BiometricsPort, Program.BiometricsCommKey);
+                _poller.StatusChanged += msg =>
+                    this.BeginInvoke(new Action(() => label15.Text = msg));
 
-                ConnectAndFetchLogs();
+                _poller.SerialNumberChanged += sn =>
+                    this.BeginInvoke(new Action(() => label14.Text = sn));
+
+                _poller.ErrorOccurred += ex =>
+                    this.BeginInvoke(new Action(() => popUpMessage("ERROR", ex.Message, 1)));
+
+                _poller.LogsReadyForUI += logs =>
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        biometricsLogsToDb.AddRange(logs);
+                        syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(
+                            biometricsLogsToDb, _biometricSerialNumber);
+                        ShowLogs();
+                    }));
+                };
+
+                _poller.ConnectionStatusChanged += isConnected =>
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        if (isConnected)
+                        {
+                            label1.Text = "Connected";
+                            label1.Font = new Font("Segoe UI", 12F);
+                            ConfigureSyncTimer();
+                            ShowConnectionInfos();
+                        }
+                        else
+                        {
+                            label1.Text = "Waiting for network";
+                            label15.Text = "Cannot Reach";
+                        }
+                    }));
+                };
+
+                _poller.Start();
+                _poller.TriggerPolling();
+
                 ConfigureSyncTimer();
-                syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-                ShowConnectionInfos();
-                ShowLogs();
                 LoadStartHiddenSetting();
             }
             catch (Exception ex)
@@ -108,97 +136,18 @@ namespace offSiteTimekeeping_NET_8
             notifyIcon1.Visible = false;
             notifyIcon1.Dispose();
         }
-        private bool IsConnected(string ip, int comkey, int port)
-        {
-            return zk.SetCommPassword(comkey) && zk.Connect_Net(ip, port);
-        }
-
         private void AddAppToStartup()
         {
             try
             {
-                string appName = "PVAOTimekeepingMiddleware";
-                string exePath = Application.ExecutablePath;
-
-                using (RegistryKey reg = Registry.CurrentUser.OpenSubKey(
-                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
-                {
-                    string[] valueNames = reg.GetValueNames();
-                    foreach (string name in valueNames)
-                    {
-                        object val = reg.GetValue(name);
-                        if (val is string path && path.Equals(exePath, StringComparison.OrdinalIgnoreCase)
-                            && name != appName)
-                        {
-                            reg.DeleteValue(name);
-                        }
-                    }
-
-                    reg.SetValue(appName, exePath);
-                }
+                registry.Register(Application.ExecutablePath);
             }
             catch (Exception ex)
             {
-                //MessageBox.Show("Failed to set startup: " + ex.Message);
                 popUpMessage("ERROR", $"Failed to set startup: {ex.Message}", 1);
             }
         }
-        private void RemoveFromStartup()
-        {
-            string appName = "PVAOTimekeepingMiddleware";
-            using (RegistryKey reg = Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
-            {
-                if (reg.GetValue(appName) != null)
-                {
-                    reg.DeleteValue(appName);
-                }
-            }
-        }
 
-        /// Button Controls
-        //private async void button2_Click(object sender, EventArgs e)
-        //{
-        //    try
-        //    {
-        //        label1.Text = "Disconnecting...";
-        //        // Cancels Retries tasks
-        //        _retryCts?.Cancel();
-        //        _retryCts = null;
-
-        //        pollingTimer.Stop();
-        //        syncTimer.Stop();
-        //        checkTimeTimer.Stop();
-
-        //        await Task.Run(() =>
-        //        {
-        //            if (Connected)
-        //            {
-        //                zk.Disconnect();
-        //                Connected = false;
-        //            }
-        //        });
-
-        //        listView1.Items.Clear();
-        //        listView1.Columns.Clear();
-
-        //        ConfigEncryptor.ClearConfig();
-        //        LocalDbService.DeleteLocalDatabase();
-
-        //        Program.BiometricsIp = null;
-        //        Program.BiometricsCommKey = 0;
-        //        Program.DataTransferMode = null;
-        //        Program.IntervalTime = 0;
-        //        Program.ScheduledTime = TimeSpan.Zero;
-
-        //        this.Tag = "Restart";
-        //        this.Close();
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        MessageBox.Show("Error during disconnect: " + ex.Message);
-        //    }
-        //}
         private void minimize_Click(object sender, EventArgs e)
         {
             this.Hide();
@@ -212,22 +161,47 @@ namespace offSiteTimekeeping_NET_8
             notifyIcon1.Visible = true;
             notifyIcon1.ShowBalloonTip(1000, "Timekeeping Middleware", "Running in background", ToolTipIcon.Info);
         }
+
         private void refresh_Click(object sender, EventArgs e)
         {
-            ConnectAndFetchLogs();
+            this.BeginInvoke(new Action(() =>
+            {
+                loadingPanel.Visible = true;
+                loadingLabel.Text = "Refreshing...";
+            }));
 
-            syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-            listView1.Items.Clear();
-            listView1.Columns.Clear();
-            ShowConnectionInfos();
-            ShowLogs();
+            Task.Run(() =>
+            {
+                try
+                {
+                    _poller?.TriggerPolling(); 
+                    Thread.Sleep(800);  
+
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(
+                            biometricsLogsToDb, _biometricSerialNumber);
+
+                        ShowLogs();
+                        loadingPanel.Visible = false;
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    this.BeginInvoke(new Action(() =>
+                    {
+                        popUpMessage("ERROR", $"Refresh failed: {ex.Message}", 1);
+                        loadingPanel.Visible = false;
+                    }));
+                }
+            });
         }
         private void notifyIcon1_MouseDoubleClick(object sender, MouseEventArgs e)
         {
             this.Show();
             this.WindowState = FormWindowState.Normal;
             this.BringToFront();
-            this.Activate(); // Make sure it gets focus
+            this.Activate();
 
             if (!_hasShownOnce)
             {
@@ -249,10 +223,9 @@ namespace offSiteTimekeeping_NET_8
             Program.IntervalTime = 0;
             Program.ScheduledTime = TimeSpan.Zero;
 
-            RemoveFromStartup();
+            registry.Remove(Application.ExecutablePath);
             Application.Exit();
         }
-        //Display Toggles
         private void ShowConnectionInfos()
         {
             if (string.IsNullOrWhiteSpace(Program.DataTransferMode))
@@ -284,13 +257,11 @@ namespace offSiteTimekeeping_NET_8
         {
             listView1.Items.Clear();
             listView1.Columns.Clear();
-
             listView1.Columns.Add("User");
             listView1.Columns.Add("ModType");
             listView1.Columns.Add("Action");
             listView1.Columns.Add("Timestamp");
             listView1.Columns.Add("Sync Status");
-
             listView1.OwnerDraw = true;
             listView1.ColumnWidthChanging += listView1_ColumnWidthChanging;
             listView1.DrawColumnHeader += listView1_DrawColumnHeader;
@@ -307,8 +278,6 @@ namespace offSiteTimekeeping_NET_8
                 item.SubItems.Add(log.InOutMode.ToString());
                 item.SubItems.Add(log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
                 item.SubItems.Add(isSynced ? "Synced" : "Pending");
-
-                // Optional styling
                 item.ForeColor = isSynced ? Color.Gray : Color.Orange;
 
                 listView1.Items.Add(item);
@@ -393,113 +362,6 @@ namespace offSiteTimekeeping_NET_8
             loadingPanel.Controls.Add(loadingLabel);
             this.Controls.Add(loadingPanel);
         }
-
-        private Panel loadingPanel;
-        private Label loadingLabel;
-
-        //Sync Logics
-        private bool ConnectAndFetchLogs()
-        {
-            try
-            {
-                var fetchSuccess = FetchLogs();
-                SyncDeviceTimeWithServer(1);
-                if (!fetchSuccess)
-                {
-                    ReconnectionBalloonNotice("Timekeeping Middleware", "Network Unreachable: Middleware Trying to Reconnect");
-                    StartAutoRetry();
-                }
-                return fetchSuccess;
-            }
-
-            catch
-            {
-                return false;
-            }
-        }
-
-        private bool FetchLogs()
-        {
-            try
-            {
-                if (!DatabaseServices.TestDatabaseConnection())
-                {
-                    //MessageBox.Show("Database Unreachable");
-                    return false;
-                }
-                else
-                {
-                    label1.Text = "Connected";
-                }
-
-                Connected = IsConnected(Program.BiometricsIp, Program.BiometricsCommKey, Program.BiometricsPort);
-                if (!Connected)
-                {
-                    return false;
-                }
-
-                this.SafeInvoke(() =>
-                {
-                    label15.Text = "Connected";
-                });
-
-                const int dwMachineNumber = 1;
-                int dwVerifyMode, dwInOutMode, dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond, dwWorkCode = 0;
-                string dwEnrollNumber;
-                string serialNumber = string.Empty;
-                zk.GetSerialNumber(dwMachineNumber, out serialNumber);
-                _biometricSerialNumber = serialNumber;
-                label14.Text = serialNumber;
-                biometricsLogsToDb.Clear();
-
-                if (!zk.ReadGeneralLogData(dwMachineNumber))
-                {
-                    popUpMessage("NOTICE", "No Log Data available or connection lost.", 2);
-                    //return false;
-                }
-
-                while (zk.SSR_GetGeneralLogData(
-                    dwMachineNumber,
-                    out dwEnrollNumber,
-                    out dwVerifyMode,
-                    out dwInOutMode,
-                    out dwYear,
-                    out dwMonth,
-                    out dwDay,
-                    out dwHour,
-                    out dwMinute,
-                    out dwSecond,
-                    ref dwWorkCode))
-                {
-                    var timestamp = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
-                    var log = new BiometricLog
-                    {
-                        EnrollNumber = dwEnrollNumber,
-                        ModType = dwVerifyMode,
-                        InOutMode = dwInOutMode,
-                        Timestamp = timestamp,
-                        WorkCode = dwWorkCode,
-                        DeviceSerialNumber = _biometricSerialNumber
-                    };
-
-                    biometricsLogsToDb.Add(log);
-                }
-
-                if (biometricsLogsToDb.Count > 0)
-                {
-                    LocalDbService.SaveLogs(biometricsLogsToDb);
-                }
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                popUpMessage("NOTICE", $"{ex.Message}", 1);
-                return false;
-            }
-
-        }
-
         private void SyncLogsToCentral()
         {
             var unsyncedLogs = LocalDbService.GetUnsyncedLogs();
@@ -519,7 +381,6 @@ namespace offSiteTimekeeping_NET_8
                 LocalDbService.MarkLogsAsSynced(filtered.ConvertAll(l => l.Id));
             }
         }
-
         public void SyncDeviceTimeWithServer(int machineNumber)
         {
 
@@ -535,7 +396,6 @@ namespace offSiteTimekeeping_NET_8
             catch (Exception ex)
             {
                 zk.SetDeviceTime(1);
-                //MessageBox.Show("[Syncing local time] : Server time sync failed : " + ex.Message);
                 popUpMessage("ERROR", $"[Syncing local time] : Server time sync failed : {ex.Message}", 1);
             }
         }
@@ -584,149 +444,19 @@ namespace offSiteTimekeeping_NET_8
             }
         }
 
-
-        //Timers
-        private void Timer1_Tick(object sender, EventArgs e)
-        {
-            if (!Connected) return;
-            try
-            {
-                int dwMachineNumber = 1;
-                string dwEnrollNumber;
-                int dwVerifyMode;
-                int dwInOutMode;
-                int dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond;
-                int dwWorkCode = 0;
-
-                List<BiometricLog> newLogs = new();
-
-                if (zk.ReadGeneralLogData(dwMachineNumber))
-                {
-                    while (zk.SSR_GetGeneralLogData(
-                        dwMachineNumber,
-                        out dwEnrollNumber,
-                        out dwVerifyMode,
-                        out dwInOutMode,
-                        out dwYear,
-                        out dwMonth,
-                        out dwDay,
-                        out dwHour,
-                        out dwMinute,
-                        out dwSecond,
-                        ref dwWorkCode))
-                    {
-                        var timestamp = new DateTime(dwYear, dwMonth, dwDay, dwHour, dwMinute, dwSecond);
-                        var log = new BiometricLog
-                        {
-                            EnrollNumber = dwEnrollNumber,
-                            ModType = dwVerifyMode,
-                            InOutMode = dwInOutMode,
-                            Timestamp = timestamp,
-                            WorkCode = dwWorkCode,
-                            DeviceSerialNumber = _biometricSerialNumber
-                        };
-
-                        if (!LocalDbService.LogExists(log))
-                        {
-                            string key = $"{log.Timestamp:yyyy-MM-dd HH:mm:ss}|{_biometricSerialNumber}";
-                            bool isSynced = syncedKeys.Contains(key);
-
-                            LocalDbService.SaveLog(log);
-                            if (isSynced)
-                            {
-                                LocalDbService.MarkLogsAsSynced(new List<int> { log.Id });
-                            }
-
-                            Invoke(() =>
-                            {
-                                var item = new ListViewItem(log.EnrollNumber);
-                                item.SubItems.Add(log.ModType.ToString());
-                                item.SubItems.Add(log.InOutMode.ToString());
-                                item.SubItems.Add(log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
-                                item.SubItems.Add(isSynced ? "Synced" : "Pending");
-                                item.ForeColor = isSynced ? Color.Gray : Color.Orange;
-                                listView1.Items.Add(item);
-                            });
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                //MessageBox.Show("TransferTimer Error: " + ex.Message);
-                popUpMessage("ERROR", $"TransferTimer Error: {ex.Message}", 1);
-            }
-        }
-
-        private async void SyncTimer_Tick(object sender, EventArgs e)
-        {
-            await Task.Run(() => SyncLogsToCentral());
-        }
-
-        private void ClockTimer_Tick(object sender, EventArgs e)
-        {
-            labelClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        }
-
-        private CancellationTokenSource _retryCts;
-        private Task _backgroundRetryTask;
-
-        private async Task RetryConnectUntilSuccessAsync(CancellationToken token)
-        {
-            try
-            {
-                while (!token.IsCancellationRequested)
-                {
-                    if (DatabaseServices.TestDatabaseConnection() && IsBiometricDeviceConnected())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label1.Text = "Connected";
-                            label1.Font = new Font("Segoe UI", 12F);
-                            ConnectAndFetchLogs();
-                            ConfigureSyncTimer();
-                            ShowConnectionInfos();
-                            syncedKeys = DatabaseServices.GetExistingLogKeysInCentralDb(biometricsLogsToDb, _biometricSerialNumber);
-                            ShowLogs();
-                        });
-                        break;
-                    }
-
-                    if (!DatabaseServices.TestDatabaseConnection())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label1.Text = "Waiting for network";
-                            label1.Font = new Font("Segoe UI", 10F);
-                        });
-                    }
-                    if (!IsBiometricDeviceConnected())
-                    {
-                        this.SafeInvoke(() =>
-                        {
-                            label15.Text = "Cannot Reach";
-                            //label1.Font = new Font("Segoe UI", 10F);
-                        });
-                    }
-
-                    await Task.Delay(5000, token);
-                }
-            }
-            catch (Exception ex)
-            {
-                popUpMessage("NOTICE", $"{ex.Message}", 2);
-            }
-        }
         private void StartAutoRetry()
         {
-            _retryCts = new CancellationTokenSource();
-            _backgroundRetryTask = RetryConnectUntilSuccessAsync(_retryCts.Token);
+            _poller?.TriggerPolling();
         }
-
         public bool IsBiometricDeviceConnected()
         {
             return IsConnected(Program.BiometricsIp, Program.BiometricsCommKey, Program.BiometricsPort);
         }
+        private bool IsConnected(string ip, int comkey, int port)
+        {
+            return zk.SetCommPassword(comkey) && zk.Connect_Net(ip, port);
+        }
+
         private void CheckTimeTimer_Tick(object sender, EventArgs e)
         {
             TimeSpan now = DateTime.Now.TimeOfDay;
@@ -767,7 +497,28 @@ namespace offSiteTimekeeping_NET_8
         }
 
 
-        //WinForms Style Configs
+        private async void SyncTimer_Tick(object sender, EventArgs e)
+        {
+            await Task.Run(() => SyncLogsToCentral());
+        }
+
+        private void ClockTimer_Tick(object sender, EventArgs e)
+        {
+            labelClock.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+
+
+
+
+ /*************************************************************************************************************************************************/
+
+        ////////////////////////////////////
+        /////     CUSTOM UI STUFFS    //////
+        ////////////////////////////////////
+
+        private Panel loadingPanel;
+        private Label loadingLabel;
+
         private void middlewareVerticalText(object sender, PaintEventArgs e)
         {
             string text = "| MIDDLEWARE |";
@@ -779,8 +530,6 @@ namespace offSiteTimekeeping_NET_8
             e.Graphics.ResetTransform();
         }
 
-
-        //WinForms Behaviour Configs
         private bool _startHidden = false;
         private bool _startMinimizedToTray = false;
         private bool _hasShownOnce = false;
@@ -840,18 +589,6 @@ namespace offSiteTimekeeping_NET_8
             _balloonTipShown = true;
         }
 
-        private void ReconnectionBalloonNotice(string title, string message)
-        {
-            if (_reconnectionTipShown) return;
-
-            DatabaseUnreachable.Icon = SystemIcons.Information;
-            DatabaseUnreachable.Visible = true;
-            DatabaseUnreachable.ShowBalloonTip(1000, title, message, ToolTipIcon.Warning);
-            _reconnectionTipShown = true;
-        }
-
-
-
         protected void EnableMinimizeToTray(NotifyIcon trayIcon)
         {
             this.Resize += (s, e) =>
@@ -904,7 +641,6 @@ namespace offSiteTimekeeping_NET_8
             }
             catch (Exception ex)
             {
-                //MessageBox.Show(ex.Message);
                 popUpMessage("NOTICE", $"{ex.Message}", 2);
             }
         }
@@ -913,7 +649,6 @@ namespace offSiteTimekeeping_NET_8
         {
             switch (mode)
             {
-                //RED
                 case 1:
                     popUpPanel.BackColor = Color.FromArgb(130, 50, 50);
                     popUpTitle.ForeColor = Color.FromArgb(190, 135, 135);
@@ -921,7 +656,6 @@ namespace offSiteTimekeeping_NET_8
                     popUpDesc.ForeColor = Color.FromArgb(210, 150, 150);
                     closePopUp.ForeColor = Color.FromArgb(190, 135, 135);
                     break;
-                //YELLOW
                 case 2:
                     popUpPanel.BackColor = Color.FromArgb(190, 210, 50);
                     popUpTitle.ForeColor = Color.FromArgb(50, 50, 10);
@@ -929,7 +663,6 @@ namespace offSiteTimekeeping_NET_8
                     popUpDesc.ForeColor = Color.FromArgb(70, 70, 20);
                     closePopUp.ForeColor = Color.FromArgb(50, 50, 10);
                     break;
-                //BLUE
                 case 3:
                     popUpPanel.BackColor = Color.FromArgb(32, 167, 199);
                     popUpTitle.ForeColor = Color.FromArgb(10, 90, 120);
@@ -937,14 +670,6 @@ namespace offSiteTimekeeping_NET_8
                     popUpDesc.ForeColor = Color.FromArgb(10, 70, 90);
                     closePopUp.ForeColor = Color.FromArgb(10, 90, 120);
                     break;
-
-                    //case 3:
-                    //    showCredentialsError.BackColor = Color.FromArgb(40, 60, 40);
-                    //    label12.ForeColor = Color.FromArgb(90, 120, 90);
-                    //    panel2.BackColor = Color.FromArgb(57, 82, 57);
-                    //    credentialsNotice.ForeColor = Color.FromArgb(160, 190, 160);
-                    //    closeCredentialsNotice.ForeColor = Color.FromArgb(90, 120, 90);
-                    //    break;
             }
 
             popUpPanel.BringToFront();
@@ -967,5 +692,6 @@ namespace offSiteTimekeeping_NET_8
             popUpPanel.Visible = false;
             popUpVisibilityTimer.Stop();
         }
+
     }
 }
