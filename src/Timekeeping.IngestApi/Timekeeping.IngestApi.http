@@ -1,0 +1,6 @@
+@Timekeeping.IngestApi_HostAddress = http://localhost:5057
+
+GET {{Timekeeping.IngestApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
